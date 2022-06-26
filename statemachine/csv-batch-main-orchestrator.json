@@ -1,0 +1,40 @@
+{
+  "Comment": "State machine for batch processing",
+  "StartAt": "Chank CSV",
+  "States": {
+    "Chank CSV": {
+      "Type": "Task",
+      "ResultPath": "$.splitOutput",
+      "Resource": "${ChankCSVFunctionArn}",
+      "Next": "Call Step function for each chunk"
+    },
+    "Call Step function for each chunk": {
+      "Type": "Map",
+      "End": true,
+      "ItemsPath": "$.splitOutput.splitFileNames",
+      "ResultPath": null,
+      "Parameters": {
+        "FilePath.$": "$$.Map.Item.Value",
+        "FileIndex.$": "$$.Map.Item.Index"
+      },
+      "Iterator": {
+        "StartAt": "Call Chunk Processor Workflow",
+        "States": {
+          "Call Chunk Processor Workflow": {
+            "Type":"Task",
+            "Resource":"arn:aws:states:::states:startExecution.sync:2",
+            "Parameters":{
+              "Input":{
+                "input": {
+                  "FilePath.$": "$.FilePath"
+                }
+              },
+              "StateMachineArn":"${CSVBatchProcessChunkArn}"
+            },
+            "End":true
+          }
+        }
+      }
+    }
+  }
+}

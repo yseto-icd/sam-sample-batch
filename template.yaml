@@ -1,0 +1,145 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  sam-app
+
+  Sample SAM Template for sam-app
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 3
+    Tracing: Active
+  Api:
+    TracingEnabled: True
+
+Parameters:
+  InputArchiveFolder:
+    Type: String
+    Default: "input_archive"
+    Description: Amazon S3 prefix in the SourceBucket where the input file will be archived after processing.
+  FileChunkSize:
+    Type: String
+    Default: 600
+    Description: Size of each of the chunks, which is split from the input file.
+  FileDelimiter:
+    Type: String
+    Default: ","
+    Description: Delimiter of the CSV file (for example, a comma).
+
+Resources:
+  CSVBatchProcessChunk:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/csv-batch-process-chunk.json
+      DefinitionSubstitutions:
+        ReadFileFunctionArn: !GetAtt ReadFileFunction.Arn
+        # ErrorTableName: !Ref ErrorTable
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ReadFileFunction
+        # - DynamoDBWritePolicy:
+        #     TableName: !Ref ErrorTable
+
+  CSVBatchMainOrchestrator:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/csv-batch-main-orchestrator.json
+      DefinitionSubstitutions:
+        ChankCSVFunctionArn: !GetAtt ChankCSVFunction.Arn
+        CSVBatchProcessChunkArn: !GetAtt CSVBatchProcessChunk.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ChankCSVFunction
+        - StepFunctionsExecutionPolicy:
+            StateMachineName: !GetAtt CSVBatchProcessChunk.Name
+        - Statement:
+            - Sid: AllowPutTargets
+              Effect: Allow
+              Action:
+                - events:PutTargets
+                - events:PutRule
+                - events:DescribeRule
+              Resource: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForStepFunctionsExecutionRule"
+
+
+  ChankCSVFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      CodeUri: chank_csv/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref SourceBucket
+      Environment:
+        Variables:
+          S3_BUCKET_NAME: !Ref SourceBucket
+          S3_KEY_NAME:  "test.csv"
+
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LoggingBucket
+      VersioningConfiguration:
+        Status: Enabled
+
+  LoggingBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      AccessControl: LogDeliveryWrite
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+
+  S3NotificationLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: s3-lambda-notification/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Policies:
+        - StepFunctionsExecutionPolicy:
+            StateMachineName: !GetAtt CSVBatchMainOrchestrator.Name
+      Environment:
+        Variables:
+          STATE_MACHINE_EXECUTION_NAME: "CSVBatchMainOrchestrator"
+          INPUT_ARCHIVE_FOLDER: !Ref InputArchiveFolder
+          FILE_CHUNK_SIZE: !Ref FileChunkSize
+          FILE_DELIMITER: !Ref FileDelimiter
+          STATE_MACHINE_ARN: !GetAtt CSVBatchMainOrchestrator.Arn
+      Events: 
+        S3NotificationLambda: 
+          Type: Api
+          Properties: 
+            Path: /s3lambda
+            Method: get
+
+  ReadFileFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: read-file/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref SourceBucket
+
+Outputs:
+
+  S3NotificationLambdaApi:
+    Description: "API Gateway endpoint URL for Prod stage for Hello World function"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/s3lambda"
+
+  SourceBucketARN:
+    Description: "ARN for the Source Bucket"
+    Value: !GetAtt SourceBucket.Arn
+

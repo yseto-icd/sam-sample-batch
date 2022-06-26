@@ -1,0 +1,12 @@
+{
+  "Comment": "AWS Step Functions example for batch processing",
+  "StartAt": "Read File",
+  "States": {
+    "Read File": {
+      "Type": "Task",
+      "ResultPath": "$.fileContents",
+      "Resource": "${ReadFileFunctionArn}",
+      "End": true
+    }
+  }
+}
